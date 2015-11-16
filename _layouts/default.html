@@ -44,9 +44,15 @@
           <div id="navbar" class="navbar-collapse collapse">
             <ul class="nav navbar-nav">
               <!-- <li class="active"><a href="/">Home</a></li>-->
-                {% assign pages_list = site.pages %}
-  		{% assign group = 'navigation' %}
-  		{% include pages_list %}
+	    {% for link in site.navigation %}
+	        {% assign current = nil %}
+	        {% if page.url contains link.url %}
+	            {% assign current = 'current' %}
+	        {% endif %}
+	        <li class="element {% if forloop.first %}first{% endif %} {{ current }} {% if forloop.last %}last{% endif %}">
+	            <a href="{{ link.url }}">{{ link.title }}</a>
+	        </li>
+	    {% endfor %}
   
               <!--<li><a href="/about/">About</a></li>
               <li><a href="/contact/">Contact</a></li>-->
