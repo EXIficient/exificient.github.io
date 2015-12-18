@@ -4,5 +4,5 @@ markdown: kramdown
 navigation:
  - title: About
    url: /about/
- - title: Contact
-   url: /contact/
+ - title: Java
+   url: /java/
