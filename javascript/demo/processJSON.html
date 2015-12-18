@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Process EXI for JSON</title>
+<script type="text/javascript" src="exificient.js"></script>
+<script type="text/javascript" src="exificient-for-json.js"></script>
+<script type="text/javascript" src="demo.js"></script>
+<link rel="stylesheet" href="demo.css" />
+
+<!-- CodeMirror - normal stuff -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/codemirror.min.css">
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/codemirror.min.js"></script>
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/mode/xml/xml.min.js"></script>
+
+<!-- CodeMirror - foldable -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/addon/fold/foldgutter.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/addon/fold/foldcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/addon/fold/foldgutter.min.js"></script>
+<!--<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/addon/fold/brace-fold.min.js"></script>-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/addon/fold/xml-fold.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.5.0/addon/fold/comment-fold.min.js"></script>
+
+<!-- CodeMirror - formatting removed after version 2 ? -->
+<script src="http://codemirror.net/2/lib/util/formatting.js"></script>
+
+</head>
+
+<body>
+<p style="font-size:x-small"><a href="index.html">Home</a> | <span style="color: Gray;">Process JSON</span> </p>
+
+
+<script>
+
+
+//shared strings
+// var sharedStrings = ["@context","@id","@value","@type","xsd:string","xsd:boolean","xsd:unsignedShort","xsd:unsignedByte", "xsd:float","http://w3c.github.io/wot/w3c-wot-td-context.jsonld","metadata","name","protocols","uri","priority","encodings","interactions","outputData","inputData","writable","Property","Action","Event","CoAP","HTTP","JSON","EXI", "WS"];
+
+function getSharedStrings() {
+	var ssv = document.getElementById('sharedStrings').value;
+	
+	if(ssv.trim().length == 0) {
+		return null;
+	} else {
+		try {
+			var sharedStrings = JSON.parse("[" + ssv + "]");
+			return sharedStrings;
+		} catch(e){
+			alert("Shared String parsing error: " + e);
+		}
+	}
+}
+
+function encodeJSON() {
+	var textJSON = editorJSON.getValue();
+	if(textJSON.trim().length == 0) {
+		alert("No JSON provided");
+	} else {
+		try {
+			var exiEncoder = new EXI4JSONEncoder();	
+			
+			// shared strings
+			exiEncoder.initSharedStrings(getSharedStrings());
+			
+			// encode
+			exiEncoder.encodeJsonText(textJSON);
+			
+			var uint8ArrayLength = exiEncoder.getUint8ArrayLength();
+			var uint8Array = exiEncoder.getUint8Array();
+			writeUint18ArrayBufferToEXIEditor(uint8Array, uint8ArrayLength);
+			
+			// alert("Encoded JSON (" + textJSON.length +" Bytes) into EXI (" + uint8ArrayLength + " Bytes)");
+			// show encoding information
+			var c = document.getElementById('pieContainer');
+			while(c.hasChildNodes()) {
+				c.removeChild(c.childNodes[0]); // Remove first child node (index 0)
+			}
+			c.appendChild( pieChart(((uint8ArrayLength/textJSON.length)*100), 70 ) );
+			var textnode = document.createTextNode(" " + new Date().toLocaleTimeString() + ": Encoded JSON (" + textJSON.length +" Bytes) into EXI (" + uint8ArrayLength + " Bytes)"); 
+			c.appendChild(textnode); 
+		} catch(err) {
+			alert("Error while encoding JSON. " + err);
+		}
+
+	}
+}
+
+function decodeEXI4JSON() {
+	var textEXI = editorEXI.getValue();
+	textEXI = textEXI.trim();
+	if(textEXI.length == 0) {
+		alert("No EXI provided");
+	} else {
+		try {
+			// remove multiple spaces
+			textEXI = textEXI.replace(/ +(?= )/g,'');
+			var sp = textEXI.split(" "); 
+			var arrayBuffer = new ArrayBuffer(sp.length);
+			var arrayBufferView = new Uint8Array(arrayBuffer);
+			// alert("TODO EXI " + sp.length + ": " + sp);
+			for(var i=0; i<sp.length; i++) {
+				arrayBufferView[i] = parseInt(sp[i], 16);
+			}
+			
+			var exiDecoder = new EXI4JSONDecoder();
+			
+			// shared strings
+			exiDecoder.initSharedStrings(getSharedStrings());
+			
+			// register XML handler
+			var jsonHandler = new JSONEventHandler();
+			exiDecoder.registerEventHandler(jsonHandler);
+			exiDecoder.decode(arrayBuffer);
+			var jsonText = JSON.stringify(jsonHandler.getJSON(), null, "\t");
+			editorJSON.setValue(jsonText);
+			
+			// alert("Decoded EXI (" + sp.length +" Bytes) into JSON (" + jsonText.length + " Bytes)");
+			// show decoding information
+			var c = document.getElementById('pieContainer');
+			while(c.hasChildNodes()) {
+				c.removeChild(c.childNodes[0]); // Remove first child node (index 0)
+			}
+			c.appendChild( pieChart(((sp.length/jsonText.length)*100), 70 ) );
+			var textnode = document.createTextNode(" " + new Date().toLocaleTimeString() + ": Decoded EXI (" + sp.length +" Bytes) into JSON (" + jsonText.length + " Bytes)"); 
+			c.appendChild(textnode); 
+		} catch(err) {
+			alert("Error while decoding EXI. " + err);
+		}
+	}
+}
+
+
+
+function readJSONFile() {
+	var file = document.getElementById('jsonInput').files[0];
+	if(file == null || file === undefined) {
+		alert("No JSON File selected");
+		return;
+	}
+	var reader = new FileReader();
+	
+	reader.onload = function(event) {
+		var buffer = event.target.result;
+		editorJSON.setValue(buffer);
+	};
+
+	reader.onerror = function(event) {
+		console.error("File could not be read! Code " + event.target.error.code);
+	};
+
+	// reader.readAsArrayBuffer(file);
+	reader.readAsText(file);
+}
+
+function readEXI4JSONFile() {
+	var file = document.getElementById('exiInput').files[0];
+	if(file == null || file === undefined) {
+		alert("No EXI File selected");
+		return;
+	}
+	var reader = new FileReader();
+	
+	reader.onload = function(event) {
+		var buffer = event.target.result;
+		var uint8Array = new Uint8Array(buffer);
+		writeUint18ArrayBufferToEXIEditor(uint8Array, uint8Array.length);
+		// editorEXI.setValue(buffer);
+	};
+
+	reader.onerror = function(event) {
+		console.error("File could not be read! Code " + event.target.error.code);
+	};
+
+	reader.readAsArrayBuffer(file);
+	// reader.readAsText(file);
+}
+
+</script> 
+
+
+<h1>JSON/EXI processing</h1>
+
+<fieldset style="width:95%;">
+<legend>Processing Performance Visualization</legend>
+<div id="pieContainer" style="height: 70px;"></div>
+</fieldset>
+<fieldset id="sharedStringsFieldset" style="width:95%;">
+<legend>SharedStrings (a.k.a. shared vocabulary). Note: delete/update if needed</legend>
+<textarea id="sharedStrings" rows="3" style="width:100%" >
+"@context","@id","@value","@type","xsd:string","xsd:boolean","xsd:unsignedShort","xsd:unsignedByte", "xsd:float","http://w3c.github.io/wot/w3c-wot-td-context.jsonld","metadata","name","protocols","uri","priority","encodings","interactions","outputData","inputData","writable","Property","Action","Event","CoAP","HTTP","JSON","EXI", "WS"</textarea>
+</fieldset>
+<script>
+if (gup('SharedStrings', null)) {
+	// show it
+} else {
+	// make it invisible
+	sharedStringsFieldset.style.visibility='hidden';
+	sharedStringsFieldset.style.display = 'none'; // hide
+	// sharedStringsFieldset.visible = false;
+	document.getElementById('sharedStrings').value = ""; // unset values
+}
+</script>
+
+<br />
+
+<table style="width:95%;border:none" >	
+	<tr>
+		<td>JSON</td>
+		<td></td>
+		<td>EXI4JSON (binary)</td>
+	</tr>
+	<tr>
+		<td style="width:50%">
+			<!-- readonly="readonly"  -->
+			<textarea id="codeJSON" name="codeJSON">{
+	"test": true
+}</textarea>
+		</td>
+		<td>
+			<button type="button" onclick="javascript:encodeJSON()">Encode &rarr;</button>
+			<br />
+			<br />
+			<br />
+			<br />
+			<button type="button" onclick="javascript:decodeEXI4JSON()">&larr; Decode</button>
+		</td>
+		<td style="width:50%">
+			<!-- readonly="readonly" -->
+			<textarea id="codeEXI" name="codeEXI"  ></textarea>
+		</td>
+	</tr>
+	<!-- -->
+	<tr id="myOptionsRow" >
+		<td>
+			<input type="file" id="jsonInput" />
+			<label for="jsonInput">Choose or drag an XML file</label>
+			<br />
+			<button type="button" onclick="javascript:readJSONFile()">Parse selected XML file into editor</button>
+		</td>
+		<td>
+		</td>
+		<td>
+			<input type="file" id="exiInput" />
+			<label for="exiInput">Choose or drag an EXI file</label>
+			<br />
+			<button type="button" onclick="javascript:readEXI4JSONFile()">Parse selected EXI4JSON file into editor</button>	
+		</td>
+	</tr>
+</table>
+
+
+<button type="button" onclick="javascript:switchOptionsOnOff()">File options on/off</button>
+<script  type="text/javascript">
+// default: make it unvisible
+switchOptionsOnOff();
+</script>
+
+
+
+ <script  type="text/javascript">
+//<![CDATA[
+	var editorJSON = CodeMirror.fromTextArea(document.getElementById("codeJSON"), {
+	  mode: "application/json",
+	  styleActiveLine: true,
+	  foldGutter: true,
+	  gutters: ["CodeMirror-linenumbers", "CodeMirror-foldgutter"],
+	  lineNumbers: true,
+	  lineWrapping: true,
+	  readOnly: false
+	});
+	
+	// editorXML.setSize("99%", "200px"); // null possible
+	
+	var editorEXI = CodeMirror.fromTextArea(document.getElementById("codeEXI"), {
+	  mode: "application/octet-stream",
+	  styleActiveLine: true,
+	  foldGutter: true,
+	  gutters: ["CodeMirror-linenumbers", "CodeMirror-foldgutter"],
+	  lineNumbers: true,
+	  lineWrapping: true,
+	  readOnly: false
+	});
+//]]>
+</script> 
+ 
+
+</body>
+</html> 
