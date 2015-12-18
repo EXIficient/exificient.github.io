@@ -6,3 +6,5 @@ navigation:
    url: /about/
  - title: Java
    url: /java/
+ - title: JavaScript
+   url: /javascript/
