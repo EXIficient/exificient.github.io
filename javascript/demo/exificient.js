@@ -1,4 +1,4 @@
-/*! exificient.js v0.0.2-SNAPSHOT | (c) 2015 Siemens AG | The MIT License (MIT) */
+/*! exificient.js v0.0.2-SNAPSHOT | (c) 2016 Siemens AG | The MIT License (MIT) */
 
 /* TODO How to realize proper error handling */
 
@@ -89,14 +89,20 @@ function AbtractEXICoder(grammars) {
 	this.grammars = grammars;
 	this.isStrict = true; // TODO
 
-	this.stringTable = new StringTable();
+	this.stringTable;
+	this.sharedStrings;
 
 	// WARNING: not specified in EXI 1.0 core (is extension)
-	AbtractEXICoder.prototype.initSharedStrings = function(sharedStrings) {
-		if (sharedStrings != null && sharedStrings instanceof Array) {
-			console.log("SharedStrings: " + sharedStrings);
-			for (var i = 0; i < sharedStrings.length; i++) {
-				this.stringTable.addValue(-1, sharedStrings[i]);
+	AbtractEXICoder.prototype.setSharedStrings = function(sharedStrings) {
+		this.sharedStrings = sharedStrings;
+	}
+	
+	AbtractEXICoder.prototype.init = function() {
+		this.stringTable = new StringTable();
+		if (this.sharedStrings != null && this.sharedStrings instanceof Array) {
+			console.log("SharedStrings: " + this.sharedStrings);
+			for (var i = 0; i < this.sharedStrings.length; i++) {
+				this.stringTable.addValue(-1, this.sharedStrings[i]);
 			}
 		}
 	}
@@ -644,6 +650,7 @@ function EXIDecoder(grammars) {
 	}
 
 	EXIDecoder.prototype.decode = function(arrayBuffer) {
+		this.init();
 		
 		this.bitStream = new BitInputStream(arrayBuffer)
 
@@ -922,8 +929,8 @@ function EXIEncoder(grammars) {
 
 	EXIEncoder.baseConstructor.call(this, grammars);
 
-	this.bitStream = new BitOutputStream();
-	this.elementContext = [];
+	this.bitStream;
+	this.elementContext;
 
 	function ElementContextEntry(qnameID, grammar) {
 		this.qnameID = qnameID
@@ -933,31 +940,38 @@ function EXIEncoder(grammars) {
 	EXIEncoder.prototype.encodeXmlText = function(textXML) {
 		/*
 		 * should allow parsing XML string into an XML document in all major
-		 * browsers, including Internet Explorer 6.
+		 * browsers, including Internet Explorer 6 and Java Nashorn.
 		 */
-		var parseXml;
-		if (typeof window.DOMParser != "undefined") {
-			parseXml = function(xmlStr) {
+		var xmlDoc;
+		if (typeof window !== 'undefined' && typeof window.DOMParser != "undefined") {
+			var parseXml = function(xmlStr) {
 				return (new window.DOMParser()).parseFromString(xmlStr,
 						"text/xml");
 			};
-		} else if (typeof window.ActiveXObject != "undefined"
+			xmlDoc = parseXml(textXML);
+		} else if (typeof window !== 'undefined' && typeof window.ActiveXObject != "undefined"
 				&& new window.ActiveXObject("Microsoft.XMLDOM")) {
-			parseXml = function(xmlStr) {
+			var parseXml = function(xmlStr) {
 				var xmlDoc = new window.ActiveXObject("Microsoft.XMLDOM");
 				xmlDoc.async = "false";
 				xmlDoc.loadXML(xmlStr);
 				return xmlDoc;
 			};
+			xmlDoc = parseXml(textXML);
+		} else if (typeof javax.xml.parsers.DocumentBuilderFactory != "undefined" ) {
+            var factory = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            factory.setNamespaceAware(true);
+            var documentBuilder = factory.newDocumentBuilder();
+            xmlDoc = documentBuilder.parse(new org.xml.sax.InputSource(new java.io.StringReader(textXML)));
+            /* return doc; */
 		} else {
 			throw new Error("No XML parser found");
 		}
-
-		var xmlDoc = parseXml(textXML);
-		+this.encodeXmlDocument(xmlDoc);
+		
+		this.encodeXmlDocument(xmlDoc);
 	}
 
-	EXIEncoder.prototype.encodeXmlDocument = function(xmlDoc) {
+	EXIEncoder.prototype.encodeXmlDocument = function(xmlDoc) {		
 		this.startDocument();
 		// documentElement always represents the root node
 		this.processXMLElement(xmlDoc.documentElement);
@@ -989,7 +1003,8 @@ function EXIEncoder(grammars) {
 				for (var i = 0; i < el.attributes.length; i++) {
 					// console.log(" AT " + el.attributes[i].nodeName + " == " +
 					// el.attributes[i].nodeValue);
-					atts.push(el.attributes[i].localName);
+					var at = el.attributes.item(i);
+					atts.push(at.localName);
 
 				}
 				// sort according localName
@@ -1007,17 +1022,23 @@ function EXIEncoder(grammars) {
 					}
 				}
 			} else {
-				this.attribute(el.attributes[0].namespaceURI,
-						el.attributes[0].localName, el.attributes[0].nodeValue);
+				// console.log("AT length: " + el.attributes.length);
+				// console.log("AT all: " + el.attributes);
+				// console.log("AT1 " + el.attributes.item(0));
+				var at1 = el.attributes.item(0);
+				// console.log("AT2 " + el.attributes[0]);
+				this.attribute(at1.namespaceURI, at1.localName, at1.nodeValue);
 			}
 		}
 
 		var childNodes = el.childNodes;
+		// console.log("\tchildNodes.length" + childNodes.length);
 		for (var i = 0; i < childNodes.length; i++) {
 			// Attributes (type 1)
 			// Text (type 3)
-			if (childNodes[i].nodeType == 3) {
-				var text = childNodes[i].nodeValue;
+			var cn = childNodes.item(i);
+			if (cn.nodeType == 3) {
+				var text = cn.nodeValue;
 				text = text.trim();
 				if (text.length > 0) {
 					// console.log(" Text '" + text + "'");
@@ -1026,8 +1047,8 @@ function EXIEncoder(grammars) {
 			}
 
 			// Process only element nodes (type 1) further
-			if (childNodes[i].nodeType == 1) {
-				this.processXMLElement(childNodes[i]);
+			if (cn.nodeType == 1) {
+				this.processXMLElement(cn);
 				// console.log(childNodes[i].childNodes[0].nodeValue);
 			}
 		}
@@ -1044,6 +1065,10 @@ function EXIEncoder(grammars) {
 	}
 
 	EXIEncoder.prototype.startDocument = function() {
+		this.init();
+		this.bitStream = new BitOutputStream();
+		this.elementContext = [];
+		
 		this.encodeHeader();
 		// set grammar position et cetera
 
