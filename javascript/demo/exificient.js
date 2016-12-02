@@ -1,6 +1,7 @@
 /*! exificient.js v0.0.2-SNAPSHOT | (c) 2016 Siemens AG | The MIT License (MIT) */
 
-/* TODO How to realize proper error handling */
+//const
+MAX_EXI_FLOAT_DIGITS = 6; // -1 indicates no rounding
 
 /*******************************************************************************
  * 
@@ -85,13 +86,29 @@ Inheritance_Manager.extend = function(subClass, baseClass) {
 	subClass.superClass = baseClass.prototype;
 }
 
-function AbtractEXICoder(grammars) {
+function AbtractEXICoder(grammars, options) {
 
 	this.grammars = grammars;
+	// copy to allow extending grammars and do re-set them
+	// TODO use a more elegant method
+	if(grammars !== undefined) { // for test.js
+		this.grammarsCopy = JSON.parse(JSON.stringify(grammars));
+	}
+	
 	this.isStrict = true; // TODO
-
+	this.byteAligned = 0; // default is false
+	if(options !== undefined) {
+		if("byteAligned" in options) {
+			this.byteAligned = options["byteAligned"];
+		}
+	}
+	
 	this.stringTable;
 	this.sharedStrings;
+	
+	// this.runtimeQNameContexts = [];
+	this.runtimeGlobalElements = {}; // Map
+	this.runtimeGrammars = [];
 
 	// WARNING: not specified in EXI 1.0 core (is extension)
 	AbtractEXICoder.prototype.setSharedStrings = function(sharedStrings) {
@@ -99,7 +116,18 @@ function AbtractEXICoder(grammars) {
 		console.log("Set sharedStrings: " + this.sharedStrings);
 	}
 	
+	
+//	AbtractEXICoder.prototype.getNumberOfQNames = function() {
+//		var n = 0;
+//		for(var i=0; i<this.grammars.qnames.namespaceContext.length; i++) {
+//			n += this.grammars.qnames.namespaceContext[i].qnameContext.length;
+//		}
+//		
+//		return n;
+//	}
+	
 	AbtractEXICoder.prototype.init = function() {
+		this.grammars = this.grammarsCopy;
 		this.stringTable = new StringTable();
 		// console.log("SharedStringsX: " + this.sharedStrings + Object.prototype.toString.call(this.sharedStrings));
 		if (this.sharedStrings != null && this.sharedStrings instanceof Array) {
@@ -108,7 +136,39 @@ function AbtractEXICoder(grammars) {
 				this.stringTable.addValue(-1, -1, this.sharedStrings[i]);
 			}
 		}
+		// TODO init grammars that have been extended before by learning
+		// this.runtimeQNameContexts = [];
+		this.runtimeGlobalElements = {};
+		this.runtimeGrammars = [];
 	}
+	
+	AbtractEXICoder.prototype.getUri = function(namespace) {
+		var namespaceContext; // undefined
+		
+		for(var i=0; i< this.grammars.qnames.namespaceContext.length; i++) {
+			if(this.grammars.qnames.namespaceContext[i].uri === namespace) {
+				return this.grammars.qnames.namespaceContext[i];
+			}
+		}
+		
+		return namespaceContext;
+	}
+	
+//	AbtractEXICoder.prototype.getNumberOfUris = function(characteristics) {
+//		if(this.runtimeQNameContexts.length == 0) {
+//			// static only	
+//			return this.grammars.qnames.numberOfUris;
+//		} else {
+//			// static and runtime uris
+//			var turis = this.grammars.qnames.numberOfUris;
+//			for(var i=0; i<this.runtimeQNameContexts.length; i++) {
+//				if(this.runtimeQNameContexts[i].uriID > turis) {
+//					turis = this.runtimeQNameContexts[i].uriID;
+//				}
+//			}
+//			var turis;
+//		}
+//	}
 
 	// returns the required number of bits for a given number of characteristics
 	AbtractEXICoder.prototype.getCodeLength = function(characteristics) {
@@ -187,22 +247,167 @@ function AbtractEXICoder(grammars) {
 			} else {
 				return this.getCodeLength(grammar.production.length + 1);
 			}
-		} else if (grammar.type === "startTagContent") {
+		} else if (grammar.type === "startTagContent" || grammar.type === "elementContent") {
+			// Note: has always second level
 			if (this.isStrict) {
 				return this.getCodeLength(grammar.production.length);
 			} else {
 				return this.getCodeLength(grammar.production.length + 1);
 			}
-		} else if (grammar.type === "elementContent") {
-			if (this.isStrict) {
-				return this.getCodeLength(grammar.production.length);
-			} else {
-				return this.getCodeLength(grammar.production.length + 1);
-			}
+		} else if (grammar.type === "builtInStartTagContent" || grammar.type === "builtInElementContent") {
+			// Note: has always second level
+			return this.getCodeLength(grammar.production.length + 1);
 		} else {
 			// unknown grammar type
 			throw new Error("Unknown grammar type: " + grammar.type);
 			return -1;
+		}
+	}
+	
+	AbtractEXICoder.prototype.get2ndCodeLengthForGrammar = function(grammar) {
+		if (grammar.type === "builtInStartTagContent") {
+			// --> second level EE, AT(*), NS?, SC?, SE(*), CH, ER?, [CM?, PI?]
+			// 4 options
+			return 2;
+		} else if (grammar.type === "builtInElementContent") {
+			// --> second level EE, SE(*), CH, ER?, [CM?, PI?]
+			// 3 options
+			return 2;
+		} else {
+			// unknown/unhandled grammar type
+			throw new Error("Unknown/unhandled 2nd grammar type: " + grammar.type);
+			return -1;
+		}
+	}
+	
+	AbtractEXICoder.prototype.get2ndEventCode = function(grammar, event) {
+		if (grammar.type === "builtInStartTagContent") {
+			// --> second level EE, AT(*), NS?, SC?, SE(*), CH, ER?, [CM?, PI?]
+			// 4 options
+			if(event === "endElement") {
+				return 0;
+			} else  if(event === "attributeGeneric") {
+				return 1;
+			} else if(event === "startElementGeneric") {
+				return 2;
+			} else if(event === "charactersGeneric") {
+				return 3;
+			} else {
+				throw new Error("Unknown/unhandled 2nd level event: " + event);
+				return -1;
+			}
+		} else if (grammar.type === "builtInElementContent") {
+			// --> second level EE, SE(*), CH, ER?, [CM?, PI?]
+			// 3 options
+			if(event === "endElement") {
+				return 0;
+			} else  if(event === "startElementGeneric") {
+				return 1;
+			} else if(event === "charactersGeneric") {
+				return 2;
+			} else {
+				throw new Error("Unknown/unhandled 2nd level event: " + event);
+				return -1;
+			}
+		} else {
+			// unknown/unhandled grammar type
+			throw new Error("Unknown/unhandled 2nd grammar type: " + grammar.type);
+			return -1;
+		}
+	}
+	
+	
+	AbtractEXICoder.prototype.get2ndEvent = function(grammar, ec2) {
+		if (grammar.type === "builtInStartTagContent") {
+			// --> second level EE, AT(*), NS?, SC?, SE(*), CH, ER?, [CM?, PI?]
+			// 4 options
+			switch(ec2) {
+			case 0:
+				return "endElement";
+				break;
+			case 1:
+				return "attributeGeneric";
+				break;
+			case 2:
+				return "startElementGeneric";
+				break;
+			case 3:
+				return "charactersGeneric";
+				break;
+			default:
+				throw new Error("Unsupported event-code=" + ec2 + "in " + grammar);
+			}
+		} else if (grammar.type === "builtInElementContent") {
+			// --> second level EE, SE(*), CH, ER?, [CM?, PI?]
+			// 3 options
+			switch(ec2) {
+			case 0:
+				return "endElement";
+				break;
+			case 1:
+				return "startElement";
+				break;
+			case 2:
+				return "characters";
+				break;
+			default:
+				throw new Error("Unsupported event-code="+ ec2 + "in " + grammar);
+			}
+		} else {
+			// unknown/unhandled grammar type
+			throw new Error("Unknown/unhandled 2nd grammar type: " + grammar.type);
+			return -1;
+		}
+	}
+	
+	
+	
+	AbtractEXICoder.prototype.getQNameContext = function(namespaceContext, localName) {
+		var qnameContext; // undefined by default
+		for (var i = 0; i < namespaceContext.qnameContext.length; i++) {
+			if (namespaceContext.qnameContext[i].localName === localName) {
+				qnameContext = namespaceContext.qnameContext[i];
+				return qnameContext;
+			}
+		}
+
+		return qnameContext;
+	}
+	
+	AbtractEXICoder.prototype.getGlobalStartElement = function(qnameContext) {
+		if(qnameContext.globalElementGrammarID !== undefined) {
+			// there is a global (static) element grammar
+			return this.grammars.grs.grammar[qnameContext.globalElementGrammarID];
+			// throw new Error("Todo get global element grammar for : " + qnameContext);
+		} else {
+			// check runtime global element grammars
+//			var seGrammar; // undefined
+			
+			var key = qnameContext.uriID + "," + qnameContext.localNameID;
+			if(key in this.runtimeGlobalElements) {
+				return this.runtimeGlobalElements[key];
+			}
+			
+//			for (var i = 0; i < this.runtimeGlobalElements.length; i++) {
+//				// TODO retrieve the right one
+//			}
+			
+//			if(seGrammar === undefined) {
+				// create Built-in Element Grammar (ids smaller than zero)
+				// var id = ((this.runtimeGrammars.length*2)+1) * (-1);
+				var id = (this.runtimeGrammars.length+1) * (-1);
+				seGrammar = {"grammarID": id, "type": "builtInStartTagContent", "production" : [ ] };
+				var elementContent = {"grammarID": id-1, "type": "builtInElementContent", "production" : [ {"event" : "endElement", "nextGrammarID" : -1} ] };
+				elementContent["elementContent"] = elementContent;
+				seGrammar["elementContent"] = elementContent;
+				
+				this.runtimeGlobalElements[key] = seGrammar;
+				
+				this.runtimeGrammars.push(seGrammar); // e.g., -1
+				this.runtimeGrammars.push(elementContent);  // e.g., -2
+				
+				return seGrammar;
+//			}
 		}
 	}
 }
@@ -247,52 +452,69 @@ function BitInputStream(arrayBuffer) {
 	/**
 	 * Decodes and returns an n-bit unsigned integer.
 	 */
-	BitInputStream.prototype.decodeNBitUnsignedInteger = function(nbits) {
-		if (nbits < 0) {
-			throw new Error("Error in decodeNBitUnsignedInteger, nbits = " + nbits);
-			this.errn = -1;
-			return -1;
-		} else if (nbits === 0) {
-			return 0;
+	BitInputStream.prototype.decodeNBitUnsignedInteger = function(nbits, byteAligned) {
+		if(byteAligned !== undefined && byteAligned) {
+			while(nbits % 8 !== 0) {
+				nbits++;
+			}
+			
+			var bitsRead = 0;
+			var result = 0;
+
+			while (bitsRead < nbits) {
+				// result = (result << 8) | is.read();
+				result += (this.decodeNBitUnsignedInteger(8) << bitsRead);
+				bitsRead += 8;
+			}
+			return result;
+			
 		} else {
-			// check buffer
-			this.readBuffer();
+			if (nbits < 0) {
+				throw new Error("Error in decodeNBitUnsignedInteger, nbits = " + nbits);
+				this.errn = -1;
+				return -1;
+			} else if (nbits === 0) {
+				return 0;
+			} else {
+				// check buffer
+				this.readBuffer();
 
-			// read bits
-			if (this.errn === 0) {
-				if (nbits <= this.capacity) {
-					/* read the bits in one step */
-					this.capacity = this.capacity - nbits;
-					var b = (this.buffer >> this.capacity)
-							& (0xff >> (8 - nbits));
-					return b;
-				} else if (this.capacity === 0 && nbits === 8) {
-					/* possible to read direct byte, nothing else to do */
-					return this.uint8Array[this.pos];
-				} else {
-					/* read bits as much as possible */
-					var b = this.buffer & (0xff >> (8 - this.capacity));
-					nbits = nbits - this.capacity;
-					this.capacity = 0;
-
-					/* read whole bytes */
-					while (this.errn === 0 && nbits >= 8) {
-						this.readBuffer();
-						b = (b << 8) | this.buffer;
-						nbits = nbits - 8;
+				// read bits
+				if (this.errn === 0) {
+					if (nbits <= this.capacity) {
+						/* read the bits in one step */
+						this.capacity = this.capacity - nbits;
+						var b = (this.buffer >> this.capacity)
+								& (0xff >> (8 - nbits));
+						return b;
+					} else if (this.capacity === 0 && nbits === 8) {
+						/* possible to read direct byte, nothing else to do */
+						return this.uint8Array[this.pos];
+					} else {
+						/* read bits as much as possible */
+						var b = this.buffer & (0xff >> (8 - this.capacity));
+						nbits = nbits - this.capacity;
 						this.capacity = 0;
-					}
 
-					/* read the spare bits in the buffer */
-					if (this.errn === 0 && nbits > 0) {
-						this.readBuffer();
-						if (this.errn === 0) {
-							b = (b << nbits) | (this.buffer >> (8 - nbits));
-							this.capacity = 8 - nbits;
+						/* read whole bytes */
+						while (this.errn === 0 && nbits >= 8) {
+							this.readBuffer();
+							b = (b << 8) | this.buffer;
+							nbits = nbits - 8;
+							this.capacity = 0;
 						}
-					}
 
-					return b;
+						/* read the spare bits in the buffer */
+						if (this.errn === 0 && nbits > 0) {
+							this.readBuffer();
+							if (this.errn === 0) {
+								b = (b << nbits) | (this.buffer >> (8 - nbits));
+								this.capacity = 8 - nbits;
+							}
+						}
+
+						return b;
+					}
 				}
 			}
 		}
@@ -357,8 +579,8 @@ function BitInputStream(arrayBuffer) {
 	 * zero to indicate sequence termination. Only seven bits per octet are used
 	 * to store the integer's value.
 	 */
-	BitInputStream.prototype.decodeInteger = function() {
-		if (this.decodeNBitUnsignedInteger(1) === 0) {
+	BitInputStream.prototype.decodeInteger = function(byteAligned) {
+		if (this.decodeNBitUnsignedInteger(1, byteAligned) === 0) {
 			// positive
 			return this.decodeUnsignedInteger();
 		} else {
@@ -384,15 +606,25 @@ function BitInputStream(arrayBuffer) {
 
 		return s;
 	}
+	
+	/**
+	 * Decode a string as a length-prefixed sequence of UCS codepoints, each of
+	 * which is encoded as an integer. 
+	 * 
+	 *  @return The character sequence as a string.
+	 */
+	BitInputStream.prototype.decodeString = function() {
+		return this.decodeStringOnly(this.decodeUnsignedInteger());
+	}
 }
 
 Inheritance_Manager.extend(EXIDecoder, AbtractEXICoder);
 
 // arrayBuffer EXI ArrayBuffer
 // grammars JSON
-function EXIDecoder(grammars) {
+function EXIDecoder(grammars, options) {
 
-	EXIDecoder.baseConstructor.call(this, grammars);
+	EXIDecoder.baseConstructor.call(this, grammars, options);
 
 	this.bitStream;
 
@@ -498,7 +730,7 @@ function EXIDecoder(grammars) {
 			/* local value hit */
 			var n = this.getCodeLength(this.stringTable
 					.getNumberOfLocalStrings(namespaceID, localNameID));
-			var localID = this.bitStream.decodeNBitUnsignedInteger(n);
+			var localID = this.bitStream.decodeNBitUnsignedInteger(n, this.byteAligned);
 			var lhit = this.stringTable.getLocalValue(namespaceID, localNameID, localID);
 			console.log("\t" + " String localValue hit '" + lhit.value
 					+ "'");
@@ -508,7 +740,7 @@ function EXIDecoder(grammars) {
 			/* global value hit */
 			var n = this.getCodeLength(this.stringTable
 					.getNumberOfGlobalStrings());
-			var globalID = this.bitStream.decodeNBitUnsignedInteger(n);
+			var globalID = this.bitStream.decodeNBitUnsignedInteger(n, this.byteAligned);
 			var ghit = this.stringTable.getGlobalValue(globalID);
 			console.log("\t" + " String globalValue hit '" + ghit.value
 					+ "'");
@@ -558,7 +790,7 @@ function EXIDecoder(grammars) {
 	}
 	
 	EXIDecoder.prototype.decodeDatatypeValueInteger = function(namespaceID, localNameID, isCharactersEvent) {
-		var int = this.bitStream.decodeInteger();
+		var int = this.bitStream.decodeInteger(this.byteAligned);
 		console.log("\t" + " INTEGER = " + int);
 		var i;
 		for (i = 0; i < this.eventHandler.length; i++) {
@@ -574,8 +806,8 @@ function EXIDecoder(grammars) {
 	}
 	
 	EXIDecoder.prototype.decodeDatatypeValueFloat = function(namespaceID, localNameID, isCharactersEvent) {
-		var mantissa = this.bitStream.decodeInteger();
-		var exponent = this.bitStream.decodeInteger();
+		var mantissa = this.bitStream.decodeInteger(this.byteAligned);
+		var exponent = this.bitStream.decodeInteger(this.byteAligned);
 		console.log("\t" + " float = " + mantissa + "E" + exponent);
 		var i;
 		for (i = 0; i < this.eventHandler.length; i++) {
@@ -592,7 +824,7 @@ function EXIDecoder(grammars) {
 	}
 	
 	EXIDecoder.prototype.decodeDatatypeValueBoolean = function(namespaceID, localNameID, isCharactersEvent) {
-		var b = this.bitStream.decodeNBitUnsignedInteger(1) === 0 ? false
+		var b = this.bitStream.decodeNBitUnsignedInteger(1, this.byteAligned) === 0 ? false
 				: true;
 		console.log("\t" + " boolean = " + b);
 		for (var i = 0; i < this.eventHandler.length; i++) {
@@ -619,9 +851,9 @@ function EXIDecoder(grammars) {
 			// YEAR_OFFSET = 2000
 			// NUMBER_BITS_MONTHDAY = 9
 			// MONTH_MULTIPLICATOR = 32
-			year = this.bitStream.decodeInteger() + 2000;
+			year = this.bitStream.decodeInteger(this.byteAligned) + 2000;
 			sDatetime += year;
-			monthDay = this.bitStream.decodeNBitUnsignedInteger(9);
+			monthDay = this.bitStream.decodeNBitUnsignedInteger(9, this.byteAligned);
 			var month = Math.floor(monthDay / 32);
 			if (month < 10) {
 				sDatetime += "-0" + month;
@@ -633,11 +865,11 @@ function EXIDecoder(grammars) {
 		} else {
 			throw new Error("Unsupported datetime type: " + datetimeType);
 		}
-		var presenceTimezone = this.bitStream.decodeNBitUnsignedInteger(1) === 0 ? false
+		var presenceTimezone = this.bitStream.decodeNBitUnsignedInteger(1, this.byteAligned) === 0 ? false
 				: true;
 		// console.log("\t" + " presenceTimezone = " + presenceTimezone);
 		if (presenceTimezone) {
-			var timeZone = this.bitStream.decodeNBitUnsignedInteger(11) - 896;
+			var timeZone = this.bitStream.decodeNBitUnsignedInteger(11, this.byteAligned) - 896;
 		}
 
 		console.log("\t" + " datetime = " + sDatetime);
@@ -662,13 +894,40 @@ function EXIDecoder(grammars) {
 
 			var codeLength = this.getCodeLengthForGrammar(grammar);
 
-			var ec = this.bitStream.decodeNBitUnsignedInteger(codeLength); //
+			var ec = this.bitStream.decodeNBitUnsignedInteger(codeLength, this.byteAligned); //
 			// console.log("\t" + "Event Code == " + ec );
-			var prod = grammar.production[ec];
-
+			
+			var event;
+			var prod;
+			if(ec >= grammar.production.length) {
+				// second level
+				var codeLength2 = this.get2ndCodeLengthForGrammar(grammar);
+				var ec2 = this.bitStream.decodeNBitUnsignedInteger(codeLength2, this.byteAligned); //
+				event = this.get2ndEvent(grammar, ec2);
+				// TODO prod
+				// throw new Error("TODO Second event-code level " + grammar.type + ", ec2="+ec2 + " --> " + event);
+			} else {
+				prod = grammar.production[ec];
+				event = prod.event;
+			}
+			
+			
+			var nextGrammar;
+			if(prod !== undefined) {
+				if(prod.nextGrammarID >= 0) {
+					// static grammars
+					nextGrammar = grammars.grs.grammar[prod.nextGrammarID];
+				} else {
+					// runtime grammars
+					var rid = (prod.nextGrammarID+1) *(-1);
+					nextGrammar = this.runtimeGrammars[rid];
+				}
+				
+				// nextGrammar = grammars.grs.grammar[prod.nextGrammarID];
+			}
 			// console.log("\t" + "Event Production " + prod.event);
 
-			switch (prod.event) {
+			switch (event) {
 			case "startDocument":
 				console.log("> SD");
 				var i;
@@ -687,22 +946,60 @@ function EXIDecoder(grammars) {
 				popStack = true;
 				break;
 			case "startElement":
+			case "startElementNS":
+			case "startElementGeneric":
 				// console.log("\t" + "StartElement qnameID " +
 				// prod.startElementQNameID );
 				// console.log("\t" + "StartElement name " +
 				// getQNameContext(prod.startElementQNameID).localName);
 
-				var seGrammar = grammars.grs.grammar[prod.startElementGrammarID];
-				var namespaceContext = this.grammars.qnames.namespaceContext[prod.startElementNamespaceID];
-				var qnameContext = namespaceContext.qnameContext[prod.startElementLocalNameID];
-				console.log(">> SE (" + qnameContext.localName + ")");
+				var seGrammar;
+				var qnameContext;
+				var namespaceContext;
+				if(prod !== undefined) {
+					// SE and SE_NS
+					namespaceContext = this.grammars.qnames.namespaceContext[prod.startElementNamespaceID];
+				}
+				
+				if(event == "startElement") {
+					seGrammar = grammars.grs.grammar[prod.startElementGrammarID];
+					qnameContext = namespaceContext.qnameContext[prod.startElementLocalNameID];
+					console.log(">> SE (" + qnameContext.localName + ")");
+				} else if (event == "startElementNS") {
+					// SE_NS
+					// decode local-name
+					qnameContext = this.decodeLocalName(namespaceContext);
+					console.log(">> SE_NS (" + namespaceContext.uri + ", " + qnameContext.localName + ")");
+					seGrammar = this.getGlobalStartElement(qnameContext);
+				} else {
+					// SE(*)
+					qnameContext = this.decodeQName();
+//					seGrammar = this.getGlobalStartElement(qnameContext);
+//					nextGrammar = grammar.elementContent; // TODO check which grammar it is (BuiltIn?)
+
+					if(grammar.type === "builtInStartTagContent" || grammar.type === "builtInElementContent") {
+						seGrammar = this.getGlobalStartElement(qnameContext);
+						nextGrammar = grammar.elementContent; // TODO check which grammar it is (BuiltIn?)
+						console.log("NextGrammar after SE(*) is " + nextGrammar);
+						
+						// learn SE
+						var ng = {"event": "startElement", "startElementGrammarID" : seGrammar.grammarID, "startElementNamespaceID" : qnameContext.uriID, "startElementLocalNameID" : qnameContext.localNameID, "nextGrammarID" : grammar.elementContent.grammarID};
+						grammar.production.push(ng);
+					} else {
+						throw new Error("Unsupported grammar-type = " + grammar.type + " for SE " +  qnameContext.localName);
+					}
+				}
+
 				var i;
 				for (i = 0; i < this.eventHandler.length; i++) {
 					var eh = this.eventHandler[i];
-					eh.startElement(namespaceContext.uri, qnameContext.localName);
+					var uri = this.grammars.qnames.namespaceContext[qnameContext.uriID].uri;
+					// console.log("inform handler (" + uri + ", " + qnameContext.localName + ")");
+					eh.startElement(uri, qnameContext.localName);
 				}
 
-				this.decodeElementContext(seGrammar, prod.startElementNamespaceID, prod.startElementLocalNameID);
+				console.log("seGrammar=" + seGrammar+ ", startElementNamespaceID=" + qnameContext.uriID + ", startElementLocalNameID=" + qnameContext.localNameID);
+				this.decodeElementContext(seGrammar, qnameContext.uriID, qnameContext.localNameID); // prod.startElementNamespaceID, prod.startElementLocalNameID
 				break;
 			case "endElement":
 				var namespaceContextEE = this.grammars.qnames.namespaceContext[elementNamespaceID];
@@ -741,17 +1038,81 @@ function EXIDecoder(grammars) {
 				this.decodeDatatypeValue(datatype, elementNamespaceID, elementLocalNameID, true);
 				break;
 			default:
-				console.log("\t" + "Unknown event " + prod.event);
-				throw new Error("Unknown event " + prod.event);
+				console.log("\t" + "Unknown event " + event);
+				throw new Error("Unknown event " + event);
 				// TODO error!
 				popStack = true;
 			}
 
 			// console.log("\t" + "Event NextGrammarId " + prod.nextGrammarID);
-			grammar = grammars.grs.grammar[prod.nextGrammarID];
+			grammar = nextGrammar; // grammars.grs.grammar[prod.nextGrammarID];
 
 		}
+	}
+	
+	
+	EXIDecoder.prototype.decodeQName = function() {
+		// decode uri & local-name
+		return this.decodeLocalName(this.decodeUri());
+	}
+	
+	EXIDecoder.prototype.decodeUri = function() {
+		var n = this.getCodeLength(this.grammars.qnames.namespaceContext.length + 1); // numberEntries+1
+		var uriID = this.bitStream.decodeNBitUnsignedInteger(n, this.byteAligned);
+		console.log("n = " + n + ", uriID = " + uriID );
 
+		var namespaceContext;
+
+		if (uriID == 0) {
+			// string value was not found
+			// ==> zero (0) as an n-nit unsigned integer
+			// followed by uri encoded as string
+			var uri = this.bitStream.decodeString();
+			console.log("decoded uri string = '" + uri + "'");
+			// after encoding string value is added to table
+			namespaceContext = {"uriID": this.grammars.qnames.namespaceContext.length, "uri": uri};
+			this.grammars.qnames.namespaceContext.push(namespaceContext);
+		} else {
+			// string value found
+			// ==> value(i+1) is encoded as n-bit unsigned integer
+			namespaceContext = this.grammars.qnames.namespaceContext[uriID-1];
+			console.log("found existing uri = '" + namespaceContext.uri + "'");
+		}
+
+		return namespaceContext;
+	}
+	
+	EXIDecoder.prototype.decodeLocalName = function(namespaceContext) {
+		var length = this.bitStream.decodeUnsignedInteger();
+
+		var qnameContext;
+
+		if (length > 0) {
+			// string value was not found in local partition
+			// ==> string literal is encoded as a String
+			// with the length of the string incremented by one
+			var localName = this.bitStream.decodeStringOnly(length - 1);
+			// After encoding the string value, it is added to the string table
+			// partition and assigned the next available compact identifier.
+			qnameContext = {"uriID": namespaceContext.uriID, "localNameID": namespaceContext.qnameContext.length, "localName": localName};
+			console.log("create new runtime qnameContext = '" + qnameContext + "'");
+			namespaceContext.qnameContext.push(qnameContext);
+		} else {
+			// string value found in local partition
+			// ==> string value is represented as zero (0) encoded as an
+			// Unsigned Integer
+			// followed by an the compact identifier of the string value as an
+			// n-bit unsigned integer
+			// n is log2 m and m is the number of entries in the string table
+			// partition
+			console.log("namespaceContext.qnameContext = '" + namespaceContext.qnameContext + "'");
+			var n = this.getCodeLength(namespaceContext.qnameContext.length);
+			var localNameID = this.bitStream.decodeNBitUnsignedInteger(n, this.byteAligned);
+			console.log("decoded localName id = " + localNameID + " of existing localName " + namespaceContext.qnameContext[localNameID].localName);
+			qnameContext = namespaceContext.qnameContext[localNameID];
+		}
+		
+		return qnameContext;
 	}
 
 	EXIDecoder.prototype.decode = function(arrayBuffer) {
@@ -797,13 +1158,36 @@ function XMLEventHandler() {
 
 	this.xml;
 	this.seOpen = false;
+	this.xmlDecls;
 
 	XMLEventHandler.prototype.getXML = function() {
 		return this.xml;
 	}
+	XMLEventHandler.prototype.getPrefix = function(namespace) {
+		// TODO more accurate namespace/prefix handling
+		var pfx = "";
+		if(namespace === undefined || namespace.length === 0) {
+			// do nothing
+		} else {
+			// check if declared already
+			if(namespace in this.xmlDecls.decls) {
+				// get existing prefix
+				// TODO assumption declared already (Note: not always the case for nested elements!!!)
+				pfx = this.xmlDecls.decls[namespace];
+			} else {
+				// create new prefix
+				pfx = "ns" + this.xmlDecls.cnt;
+				this.xmlDecls.decls[namespace]  = pfx;
+				this.xmlDecls.cnt++;
+			}
+		}
+		
+		return pfx;
+	}
 
 	XMLEventHandler.prototype.startDocument = function() {
 		this.xml = "";
+		this.xmlDecls = {"cnt": 0, "decls": {}};
 	}
 	XMLEventHandler.prototype.endDocument = function() {
 	}
@@ -811,15 +1195,34 @@ function XMLEventHandler() {
 		if (this.seOpen) {
 			this.xml += ">";
 		}
-		this.xml += "<" + localName;
+
+		var pfx = this.getPrefix(namespace);
+		if(pfx.length > 0) {
+			this.xml += "<" + pfx + ":" + localName;
+		} else {
+			this.xml += "<" + localName;
+		}
 		this.seOpen = true;
+		
+		if(pfx.length > 0) {
+			this.xml += " xmlns:" + pfx + "='"  + namespace + "'";
+		}
+
 	}
 	XMLEventHandler.prototype.endElement = function(namespace, localName) {
 		if (this.seOpen) {
 			this.xml += ">";
 			this.seOpen = false;
 		}
-		this.xml += "</" + localName + ">";
+		
+		var pfx = this.getPrefix(namespace);
+		if(pfx.length > 0) {
+			this.xml += "</" + pfx + ":" + localName + ">";
+		} else {
+			this.xml += "</" + localName + ">";
+		}
+		
+		
 	}
 	XMLEventHandler.prototype.characters = function(chars) {
 		if (this.seOpen) {
@@ -889,41 +1292,74 @@ function BitOutputStream() {
 	 * Encode n-bit unsigned integer. The n least significant bits of parameter
 	 * b starting with the most significant, i.e. from left to right.
 	 */
-	BitOutputStream.prototype.encodeNBitUnsignedInteger = function(b, n) {
-		if (n === 0) {
-			// nothing to write
-		} else if (n <= this.capacity) {
-			// all bits fit into the current buffer
-			this.buffer = (this.buffer << n) | (b & (0xff >> (8 - n)));
-			this.capacity -= n;
-			if (this.capacity === 0) {
+	BitOutputStream.prototype.encodeNBitUnsignedInteger = function(b, n, byteAligned) {
+
+		if(byteAligned !== undefined && byteAligned) {
+			while(n % 8 !== 0) {
+				n++;
+			}
+			
+			// TODO to check why we can't combine bit and byteAligned
+			if (n === 0) {
+				// 0 bytes
+			} else if (n < 9) {
+				// 1 byte
+				this.encodeNBitUnsignedInteger(b & 0xff, 8);
+			} else if (n < 17) {
+				// 2 bytes
+				this.encodeNBitUnsignedInteger(b & 0x00ff, 8);
+				this.encodeNBitUnsignedInteger((b & 0xff00) >> 8, 8);
+			} else if (n < 25) {
+				// 3 bytes
+				this.encodeNBitUnsignedInteger(b & 0x0000ff, 8);
+				this.encodeNBitUnsignedInteger((b & 0x00ff00) >> 8, 8);
+				this.encodeNBitUnsignedInteger((b & 0xff0000) >> 16, 8);
+			} else if (n < 33) {
+				// 4 bytes
+				this.encodeNBitUnsignedInteger(b & 0x000000ff, 8);
+				this.encodeNBitUnsignedInteger((b & 0x0000ff00) >> 8, 8);
+				this.encodeNBitUnsignedInteger((b & 0x00ff0000) >> 16, 8);
+				this.encodeNBitUnsignedInteger((b & 0xff000000) >> 24, 8);
+			} else {
+				throw new Error("nbit = " + n + " exceeds supported value range");
+			}
+			
+		} else {
+			if (n === 0) {
+				// nothing to write
+			} else if (n <= this.capacity) {
+				// all bits fit into the current buffer
+				this.buffer = (this.buffer << n) | (b & (0xff >> (8 - n)));
+				this.capacity -= n;
+				if (this.capacity === 0) {
+					this.checkBuffer();
+					this.uint8Array[this.len] = this.buffer;
+					this.capacity = 8;
+					this.len++;
+				}
+			} else {
+				// fill as many bits into buffer as possible
+				this.buffer = (this.buffer << this.capacity)
+						| ((b >>> (n - this.capacity)) & (0xff >> (8 - this.capacity)));
+				n -= this.capacity;
 				this.checkBuffer();
 				this.uint8Array[this.len] = this.buffer;
-				this.capacity = 8;
 				this.len++;
-			}
-		} else {
-			// fill as many bits into buffer as possible
-			this.buffer = (this.buffer << this.capacity)
-					| ((b >>> (n - this.capacity)) & (0xff >> (8 - this.capacity)));
-			n -= this.capacity;
-			this.checkBuffer();
-			this.uint8Array[this.len] = this.buffer;
-			this.len++;
 
-			// possibly write whole bytes
-			while (n >= 8) {
-				n -= 8;
-				this.checkBuffer();
-				this.uint8Array[this.len] = b >>> n;
-				this.len++;
-			}
+				// possibly write whole bytes
+				while (n >= 8) {
+					n -= 8;
+					this.checkBuffer();
+					this.uint8Array[this.len] = b >>> n;
+					this.len++;
+				}
 
-			// put the rest of bits into the buffer
-			this.buffer = b; // Note: the high bits will be shifted out
-			// during
-			// further filling
-			this.capacity = 8 - n;
+				// put the rest of bits into the buffer
+				this.buffer = b; // Note: the high bits will be shifted out
+				// during
+				// further filling
+				this.capacity = 8 - n;
+			}
 		}
 	}
 
@@ -979,6 +1415,14 @@ function BitOutputStream() {
 			return 10;
 		}
 	}
+	
+	BitOutputStream.prototype.shiftRight = function(n, bits) {
+		for(i=0; i<bits; i++) {
+			n /= 2;
+		}
+		n = Math.floor(n);
+		return n;
+	}
 
 	/**
 	 * Encode an arbitrary precision non negative integer using a sequence of
@@ -986,6 +1430,7 @@ function BitOutputStream() {
 	 * indicate sequence termination. Only seven bits per octet are used to
 	 * store the integer's value.
 	 */
+	 // Note: JavaScript shift operator works till 32 bits only!!
 	BitOutputStream.prototype.encodeUnsignedInteger = function(n) {
 		if (n < 128) {
 			// write value as is
@@ -996,22 +1441,28 @@ function BitOutputStream() {
 			switch (n7BitBlocks) {
 			case 10:
 				this.encodeNBitUnsignedInteger(128 | n, 8);
-				n = n >>> 7;
+				// n = n >>> 7;
+				n = this.shiftRight(n, 7);
 			case 9:
 				this.encodeNBitUnsignedInteger(128 | n, 8);
-				n = n >>> 7;
+				// n = n >>> 7;
+				n = this.shiftRight(n, 7);
 			case 8:
 				this.encodeNBitUnsignedInteger(128 | n, 8);
-				n = n >>> 7;
+				// n = n >>> 7;
+				n = this.shiftRight(n, 7);
 			case 7:
 				this.encodeNBitUnsignedInteger(128 | n, 8);
-				n = n >>> 7;
+				// n = n >>> 7;
+				n = this.shiftRight(n, 7);
 			case 6:
 				this.encodeNBitUnsignedInteger(128 | n, 8);
-				n = n >>> 7;
+				// n = n >>> 7;
+				n = this.shiftRight(n, 7);
 			case 5:
 				this.encodeNBitUnsignedInteger(128 | n, 8);
-				n = n >>> 7;
+				// n = n >>> 7;
+				n = this.shiftRight(n, 7);
 			case 4:
 				this.encodeNBitUnsignedInteger(128 | n, 8);
 				n = n >>> 7;
@@ -1034,15 +1485,15 @@ function BitOutputStream() {
 	 * zero to indicate sequence termination. Only seven bits per octet are used
 	 * to store the integer's value.
 	 */
-	BitOutputStream.prototype.encodeInteger = function(n) {
+	BitOutputStream.prototype.encodeInteger = function(n, byteAligned) {
 		// signalize sign
 		if (n < 0) {
-			this.encodeNBitUnsignedInteger(1, 1);
+			this.encodeNBitUnsignedInteger(1, 1, byteAligned);
 			// For negative values, the Unsigned Integer holds the
 			// magnitude of the value minus 1
 			this.encodeUnsignedInteger((-n) - 1);
 		} else {
-			this.encodeNBitUnsignedInteger(0, 1);
+			this.encodeNBitUnsignedInteger(0, 1, byteAligned);
 			this.encodeUnsignedInteger(n);
 		}
 	}
@@ -1065,9 +1516,9 @@ function BitOutputStream() {
 Inheritance_Manager.extend(EXIEncoder, AbtractEXICoder);
 
 // grammars JSON
-function EXIEncoder(grammars) {
+function EXIEncoder(grammars, options) {
 
-	EXIEncoder.baseConstructor.call(this, grammars);
+	EXIEncoder.baseConstructor.call(this, grammars, options);
 
 	this.bitStream;
 	this.elementContext;
@@ -1232,7 +1683,7 @@ function EXIEncoder(grammars) {
 		if (ec != -1) {
 			// console.log("\t" + "Event Code == " + ec );
 			var codeLength = this.getCodeLengthForGrammar(docGr);
-			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength);
+			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength, this.byteAligned);
 
 			var nextGrammar = grammars.grs.grammar[prod.nextGrammarID];
 			this.elementContext.push(new ElementContextEntry(-1, -1, nextGrammar));
@@ -1254,7 +1705,7 @@ function EXIEncoder(grammars) {
 		if (ec != -1) {
 			// console.log("\t" + "Event Code == " + ec );
 			var codeLength = this.getCodeLengthForGrammar(grammar);
-			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength);
+			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength, this.byteAligned);
 
 			// pop element stack
 			this.elementContext.pop();
@@ -1275,34 +1726,172 @@ function EXIEncoder(grammars) {
 		}
 		console.log("SE {" + namespace + "}" + localName);
 
+		var isSE = 0;
+		var isSE_NS = 0;
+		var isSE_GENERIC = 0;
+		var namespaceContext;
+		
 		var ec = -1;
 		var prod;
 		var grammar = this.elementContext[this.elementContext.length - 1].grammar;
 		for (var i = 0; ec === -1 && i < grammar.production.length; i++) {
 			prod = grammar.production[i];
 			if (prod.event === "startElement") {
-				var namespaceContext = this.grammars.qnames.namespaceContext[prod.startElementNamespaceID];
+				namespaceContext = this.grammars.qnames.namespaceContext[prod.startElementNamespaceID];
 				var qnameContext = namespaceContext.qnameContext[prod.startElementLocalNameID];
 				if (qnameContext.localName === localName && namespaceContext.uri === namespace) {
 					ec = i;
+					isSE = 1;
 				}
+			} else if (prod.event === "startElementNS") {
+				namespaceContext = this.grammars.qnames.namespaceContext[prod.startElementNamespaceID];
+				if (namespaceContext.uri === namespace) {
+					ec = i;
+					isSE_NS = 1;
+				}
+			} else if (prod.event === "startElementGeneric") {
+				ec = i;
+				isSE_GENERIC = 1;
 			}
 		}
-		if (ec != -1) {
+		if(ec != -1) {
+			// event-code found
 			// console.log("\t" + "Event Code == " + ec );
 			var codeLength = this.getCodeLengthForGrammar(grammar);
-			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength);
-
+			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength, this.byteAligned);
+			
+			var startElementGrammar;
+			
+			if (isSE || isSE_NS) {
+				// ok
+			} else if (isSE_GENERIC) {
+				throw new Error("TODO StartElement Generic not implemented yet for " + localName);
+			} else {
+				throw new Error("No startElement event found for " + localName);
+			}
+			
 			// update current element context
-			var nextGrammar = grammars.grs.grammar[prod.nextGrammarID];
+			var nextGrammar;
+			if(prod.nextGrammarID >= 0) {
+				// static grammars
+				nextGrammar = grammars.grs.grammar[prod.nextGrammarID];
+			} else {
+				// runtime grammars
+				var rid = (prod.nextGrammarID+1) *(-1);
+				nextGrammar = this.runtimeGrammars[rid];
+			}
+			
 			this.elementContext[this.elementContext.length - 1].grammar = nextGrammar;
+			
+			console.log("NextGrammar after SE/SE_NS " + localName + " is " + nextGrammar);
+			
 			// push new element context
-			var startElementGrammar = grammars.grs.grammar[prod.startElementGrammarID];
+			if (isSE) {
+				// SE(uri:localname)
+				startElementGrammar = grammars.grs.grammar[prod.startElementGrammarID];
+			} else if (isSE_NS) {
+				// SE(uri:*)
+				// encode local-name
+				var qnameContext = this.encodeLocalName(namespaceContext, localName);
+				startElementGrammar = this.getGlobalStartElement(qnameContext);
+			}
 			this.elementContext.push(new ElementContextEntry(
-					prod.startElementNamespaceID, prod.startElementLocalNameID, startElementGrammar));
+					namespaceContext.uriID, qnameContext.localNameID, startElementGrammar));
+//			this.elementContext.push(new ElementContextEntry(
+//			prod.startElementNamespaceID, prod.startElementLocalNameID, startElementGrammar));
+			
 		} else {
-			throw new Error("No startElement event found for " + localName);
+			// NO event-code found
+			if(grammar.type === "builtInStartTagContent") {
+				// 1st level
+				var codeLength = this.getCodeLengthForGrammar(grammar);
+				this.bitStream.encodeNBitUnsignedInteger(grammar.production.length, codeLength, this.byteAligned);
+				// 2nd level
+				var codeLength = this.get2ndCodeLengthForGrammar(grammar);
+				var ec2 = this.get2ndEventCode(grammar, "startElementGeneric");
+				this.bitStream.encodeNBitUnsignedInteger(ec2, codeLength, this.byteAligned); //2 in 2 bits
+				
+				// encode qname
+				var qnameContext = this.encodeQName(namespace, localName);
+				var startElementGrammar = this.getGlobalStartElement(qnameContext);
+				
+				// learn SE
+				var ng = {"event": "startElement", "startElementGrammarID" : startElementGrammar.grammarID, "startElementNamespaceID" : qnameContext.uriID, "startElementLocalNameID" : qnameContext.localNameID, "nextGrammarID" : grammar.elementContent.grammarID};
+				grammar.production.push(ng);
+				
+				// update current element context
+				this.elementContext[this.elementContext.length - 1].grammar = grammar.elementContent;
+				console.log("NextGrammar after SE_Generic_Undefined " + localName + " is " + this.elementContext[this.elementContext.length - 1].grammar);
+				
+				this.elementContext.push(new ElementContextEntry(
+						qnameContext.uriID, qnameContext.localNameID, startElementGrammar));
+				
+			} else if(grammar.type === "builtInElementContent") {
+				throw new Error("TODO SE elementContent grammar. grammar.type = " + grammar.type);
+			} else {
+				throw new Error("No startElement event found for " + localName + ". grammar.type = " + grammar.type);
+			}
 		}
+	}
+	
+	EXIEncoder.prototype.encodeQName = function(namespace, localName) {
+		var namespaceContext = this.encodeUri(namespace);
+		
+		return this.encodeLocalName(namespaceContext, localName);
+	}
+	
+	EXIEncoder.prototype.encodeUri = function(namespace) {
+		var n = this.getCodeLength(this.grammars.qnames.namespaceContext.length + 1); // numberEntries+1
+		
+		var namespaceContext = this.getUri(namespace);
+
+		if (namespaceContext === undefined) {
+			// uri string value was not found
+			// ==> zero (0) as an n-nit unsigned integer
+			// followed by uri encoded as string
+			this.bitStream.encodeNBitUnsignedInteger(0, n, this.byteAligned);
+			this.bitStream.encodeString(namespace);
+			// after encoding string value is added to table
+			namespaceContext = {"uriID": this.grammars.qnames.namespaceContext.length, "uri": namespace};
+			this.grammars.qnames.namespaceContext.push(namespaceContext);
+		} else {
+			// string value found
+			// ==> value(i+1) is encoded as n-bit unsigned integer
+			this.bitStream.encodeNBitUnsignedInteger(namespaceContext.uriID + 1, n, this.byteAligned);
+		}
+		
+		return namespaceContext;
+	}
+	
+	EXIEncoder.prototype.encodeLocalName = function(namespaceContext, localName) {
+		var qnameContext = this.getQNameContext(namespaceContext, localName);
+		if(qnameContext === undefined) {
+			// string value was not found in local partition
+			// ==> string literal is encoded as a String
+			// with the length of the string incremented by one
+			this.bitStream.encodeUnsignedInteger(localName.length + 1);
+			this.bitStream.encodeStringOnly(localName);
+			// After encoding the string value, it is added to the string
+			// table partition and assigned the next available compact
+			// identifier
+			// TODO add to qname context
+			// qnc = ruc.addQNameContext(localName);
+			qnameContext = {"uriID": namespaceContext.uriID, "localNameID": namespaceContext.qnameContext.length, "localName": localName};
+			console.log("create new runtime qnameContext = '" + qnameContext + "'");
+			// this.runtimeQNameContexts.push(qnameContext);
+			namespaceContext.qnameContext.push(qnameContext);
+		} else {
+			// string value found in local partition
+			// ==> string value is represented as zero (0) encoded as an
+			// Unsigned Integer followed by an the compact identifier of the
+			// string value as an n-bit unsigned integer n is log2 m and m is
+			// the number of entries in the string table partition
+			this.bitStream.encodeUnsignedInteger(0);
+			var n = this.getCodeLength(namespaceContext.qnameContext.length);
+			this.bitStream.encodeNBitUnsignedInteger(qnameContext.localNameID, n, this.byteAligned);
+		}
+		
+		return qnameContext;
 	}
 
 	EXIEncoder.prototype.endElement = function() {
@@ -1320,7 +1909,7 @@ function EXIEncoder(grammars) {
 		if (ec != -1) {
 			// console.log("\t" + "Event Code == " + ec );
 			var codeLength = this.getCodeLengthForGrammar(grammar);
-			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength);
+			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength, this.byteAligned);
 
 			// pop element stack
 			this.elementContext.pop();
@@ -1357,7 +1946,7 @@ function EXIEncoder(grammars) {
 			if (ec != -1) {
 				// console.log("\t" + "Event Code == " + ec );
 				var codeLength = this.getCodeLengthForGrammar(grammar);
-				this.bitStream.encodeNBitUnsignedInteger(ec, codeLength);
+				this.bitStream.encodeNBitUnsignedInteger(ec, codeLength, this.byteAligned);
 				// write value
 				var datatype = this.grammars.simpleDatatypes[prod.attributeDatatypeID];
 				this
@@ -1387,7 +1976,7 @@ function EXIEncoder(grammars) {
 		if (ec != -1) {
 			// console.log("\t" + "Event Code == " + ec );
 			var codeLength = this.getCodeLengthForGrammar(grammar);
-			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength);
+			this.bitStream.encodeNBitUnsignedInteger(ec, codeLength, this.byteAligned);
 			// write value
 			var datatype = this.grammars.simpleDatatypes[prod.charactersDatatypeID];
 			var elementContext = this.elementContext[this.elementContext.length - 1];
@@ -1400,7 +1989,37 @@ function EXIEncoder(grammars) {
 			var nextGrammar = grammars.grs.grammar[prod.nextGrammarID];
 			this.elementContext[this.elementContext.length - 1].grammar = nextGrammar;
 		} else {
-			throw new Error("No characters event found for '" + chars + "'");
+//			if(grammar.type === "builtInStartTagContent" || grammar.type === "builtInElementContent" ) {
+//				// 1st level
+//				var codeLength = this.getCodeLengthForGrammar(grammar);
+//				this.bitStream.encodeNBitUnsignedInteger(grammar.production.length, codeLength, this.byteAligned);
+//				// 2nd level
+//				var codeLength = this.get2ndCodeLengthForGrammar(grammar);
+//				var ec2 = this.get2ndEventCode(grammar, "charactersGeneric");
+//				this.bitStream.encodeNBitUnsignedInteger(ec2, codeLength, this.byteAligned);
+//				
+//				// write value
+//				var datatype = {"type": "STRING"};
+//				var elementContext = this.elementContext[this.elementContext.length - 1];
+//				this
+//						.encodeDatatypeValue(
+//								chars,
+//								datatype,
+//								elementContext.namespaceID, elementContext.localNameID);
+//				
+//				// learn CH
+//				// TODO check charactersDatatypeID is STRING
+//				if(this.grammars.simpleTypes[0].type !== "STRING") {
+//					throw new Error("TODO simpleType ID 0 is not STRING");
+//				}
+//				var ng = {"event": "characters",  "charactersDatatypeID" : 0, "nextGrammarID" : grammar.elementContent.grammarID};
+//				grammar.production.push(ng);
+//				
+//				// update current element context
+//				this.elementContext[this.elementContext.length - 1].grammar = grammar.elementContent;
+//			} else {
+				throw new Error("No characters event found for '" + chars + "'");
+//			}
 		}
 	}
 	
@@ -1457,8 +2076,9 @@ function EXIEncoder(grammars) {
 		}
 		
 		// value = (Number(value)).doubleValue();
-		value = Number(Number(value).toFixed(6)); // at most 6 digits
-		
+		if(MAX_EXI_FLOAT_DIGITS >= 0) {
+			value = Number(Number(value).toFixed(MAX_EXI_FLOAT_DIGITS)); // at most XX digits
+		}
 		
 		// negative?
 		var isNegative = false;
@@ -1611,14 +2231,14 @@ function EXIEncoder(grammars) {
 				var n = this.getCodeLength(this.stringTable
 						.getNumberOfLocalStrings(namespaceID, localNameID));
 				this.bitStream.encodeNBitUnsignedInteger(
-						stEntry.localValueID, n);
+						stEntry.localValueID, n, this.byteAligned);
 			} else {
 				// global hit
 				this.bitStream.encodeUnsignedInteger(1);
 				var n = this.getCodeLength(this.stringTable
 						.getNumberOfGlobalStrings());
 				this.bitStream.encodeNBitUnsignedInteger(
-						stEntry.globalValueID, n);
+						stEntry.globalValueID, n, this.byteAligned);
 			}
 		}
 	}
@@ -1630,7 +2250,7 @@ function EXIEncoder(grammars) {
 	
 	EXIEncoder.prototype.encodeDatatypeValueInteger = function(value, namespaceID, localNameID) {
 		console.log("\t" + " INTEGER = " + value);
-		this.bitStream.encodeInteger(value);
+		this.bitStream.encodeInteger(value, this.byteAligned);
 	}
 	
 	EXIEncoder.prototype.encodeDatatypeValueFloat = function(value, namespaceID, localNameID) {
@@ -1641,8 +2261,8 @@ function EXIEncoder(grammars) {
 		// var fl = getNumberParts(f);
 		var fl = getEXIFloat(f);
 		// mantissa followed by exponent
-		this.bitStream.encodeInteger(fl.mantissa);
-		this.bitStream.encodeInteger(fl.exponent);
+		this.bitStream.encodeInteger(fl.mantissa, this.byteAligned);
+		this.bitStream.encodeInteger(fl.exponent, this.byteAligned);
 		console
 				.log("\t" + " floatB = " + fl.mantissa + " E "
 						+ fl.exponent);
@@ -1650,9 +2270,9 @@ function EXIEncoder(grammars) {
 	
 	EXIEncoder.prototype.encodeDatatypeValueBoolean = function(value, namespaceID, localNameID) {
 		if (value) { // == "true" || value == "1"
-			this.bitStream.encodeNBitUnsignedInteger(1, 1);
+			this.bitStream.encodeNBitUnsignedInteger(1, 1, this.byteAligned);
 		} else {
-			this.bitStream.encodeNBitUnsignedInteger(0, 1);
+			this.bitStream.encodeNBitUnsignedInteger(0, 1, this.byteAligned);
 		}
 	}
 	
@@ -1671,19 +2291,19 @@ function EXIEncoder(grammars) {
 			pos = checkCharacter(value, pos, '-', dateTimeValue); // hyphen
 			pos = parseMonthDay(value, pos, dateTimeValue);
 			// TODO timezone
-			this.bitStream.encodeInteger(dateTimeValue.year - 2000);
+			this.bitStream.encodeInteger(dateTimeValue.year - 2000, this.byteAligned);
 			this.bitStream.encodeNBitUnsignedInteger(
-					dateTimeValue.monthDay, 9);
+					dateTimeValue.monthDay, 9, this.byteAligned);
 		} else {
 			throw new Error("Unsupported datetime type: " + datetimeType);
 		}
 
 		var presenceTimezone = false; // TODO
 		if (presenceTimezone) {
-			this.bitStream.encodeNBitUnsignedInteger(1, 1);
+			this.bitStream.encodeNBitUnsignedInteger(1, 1, this.byteAligned);
 			throw new Error("Unsupported datetime timezone");
 		} else {
-			this.bitStream.encodeNBitUnsignedInteger(0, 1);
+			this.bitStream.encodeNBitUnsignedInteger(0, 1, this.byteAligned);
 		}
 		// console.log("\t" + " presenceTimezone = " + presenceTimezone);
 		console.log("\t" + " datetime = " + sDatetime);
