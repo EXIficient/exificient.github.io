@@ -3,6 +3,7 @@
 <head>
 <title>Process XML</title>
 <script type="text/javascript" src="exificient.js"></script>
+<script type="text/javascript" src="xml-parser.js"></script>
 <script type="text/javascript" src="demo.js"></script>
 <link rel="stylesheet" href="demo.css" />
 
@@ -27,7 +28,6 @@
 
 
 <script>
-
 
 function readJSONGrammars(callback) {
 	var file = document.getElementById('grammarsInput').files[0];
@@ -61,6 +61,9 @@ function readJSONGrammars(callback) {
 	reader.readAsText(file);
 }
 
+var options = {};
+// options['byteAligned'] = true;  // byte-aligned coding
+// alert("TEST: switched ON byteAligned");
 
 function encodeXML(grammars) {
 	var textXML = editorXML.getValue();
@@ -69,10 +72,12 @@ function encodeXML(grammars) {
 	} else {
 		try {
 			// console.log("JSON Grammars: " + grammars);
-			var exiEncoder = new EXIEncoder(grammars);	
+			var exiEncoder = new EXIEncoder(Grammars.fromJson(grammars), options);	
 			
-			// TODO full encode
-			exiEncoder.encodeXmlText(textXML);
+			// exiEncoder.encodeXmlText(textXML);
+			var xmlDoc = getXMLDocument(textXML);
+			exiEncoder.encodeXmlDocument(xmlDoc);
+			// exiEncoder.encodeXmlText(textXML);
 			
 			var uint8ArrayLength = exiEncoder.getUint8ArrayLength();
 			var uint8Array = exiEncoder.getUint8Array();
@@ -103,18 +108,18 @@ function decodeEXI(grammars) {
 			textEXI = textEXI.replace(/ +(?= )/g,'');
 			var sp = textEXI.split(" "); 
 			var arrayBuffer = new ArrayBuffer(sp.length);
-			var arrayBufferView = new Uint8Array(arrayBuffer);
+			var uint8Array = new Uint8Array(arrayBuffer);
 			// alert("TODO EXI " + sp.length + ": " + sp);
 			for(var i=0; i<sp.length; i++) {
-				arrayBufferView[i] = parseInt(sp[i], 16);
+				uint8Array[i] = parseInt(sp[i], 16);
 			}
 			
-			var exiDecoder = new EXIDecoder(grammars);
+			var exiDecoder = new EXIDecoder(Grammars.fromJson(grammars), options);
 			
 			// register XML handler
 			var xmlHandler = new XMLEventHandler();
 			exiDecoder.registerEventHandler(xmlHandler);
-			exiDecoder.decode(arrayBuffer);
+			exiDecoder.decode(uint8Array);
 			editorXML.setValue(xmlHandler.getXML());
 			// pretty-print XML
 			autoFormat(); 
